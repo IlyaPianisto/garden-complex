@@ -7,6 +7,16 @@ load_dotenv()
 
 DB_FILE = os.getenv('DB_FILE')
 
+DEFAULTS = {
+    "light_day": 0.0,
+    "light_night": 0.0,
+    "wind_max": 0.0,
+    "humidity_max": 0.0,
+    'temp_min': 1.0,
+    "bottle_volume_l": 1.0,
+    "pump_flow_rate": 10.0,
+}
+
 def init_db():
     conn = sqlite3.connect(DB_FILE)
     cursor = conn.cursor()
@@ -15,12 +25,13 @@ def init_db():
     cursor.execute("""
                    CREATE TABLE IF NOT EXISTS users (
                    chat_id TEXT PRIMARY KEY,
-                   wind_zero REAL NOT NULL DEFAULT '0.0',
-                   light_ref REAL NOT NULL DEFAULT '0.0',
-                   temp_min REAL NOT NULL DEFAULT '0.0',
+                   light_day REAL NOT NULL DEFAULT '0.0',
+                   light_night REAL NOT NULL DEFAULT '0.0',
                    wind_max REAL NOT NULL DEFAULT '0.0',
                    humidity_max REAL NOT NULL DEFAULT '0.0',
-                   light_min REAL NOT NULL DEFAULT '0.0',
+                   bottle_volume_l REAL NOT NULL DEFAULT '1.0',
+                   temp_min REAL NOT NULL DEFAULT '1.0',
+                    pump_flow_rate REAL NOT NULL DEFAULT '0.0',
                    created_at TEXT NOT NULL
                    )
                    """)
@@ -61,7 +72,7 @@ def init_db():
     cursor.execute("""
                    CREATE TABLE IF NOT EXISTS pump_assignments (
                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                   system_id TEXT NOT NULL REFERENCES systems (systems_id),
+                   system_id INTEGER NOT NULL REFERENCES systems (systems_id),
                    pump_number INTEGER NOT NULL CHECK(pump_number BETWEEN 1 AND 8),
                    tree_type_id INTEGER NOT NULL REFERENCES tree_types (id),
                    assigned_at TEXT NOT NULL,
@@ -134,12 +145,13 @@ def get_or_create_user(chat_id: str) -> dict:
 #обновление значений всех
 def update_user_settings(chat_id: str, field: str, value:str) -> None:
     ALLOWED_FIELDS = {
-        'wind_zero',
-        'light_ref',
+        'light_day',
+        'light_night',
         'temp_min',
         'wind_max',
-        'light_min',
-        'humidity_max'
+        'humidity_max',
+        'bottle_volume_l',
+        'pump_flow_rate',
     }
     if field not in ALLOWED_FIELDS:
         print(f"ERROR: НЕДОПУСТИМОЕ ПОЛЕ: {field}")
@@ -155,6 +167,16 @@ def update_user_settings(chat_id: str, field: str, value:str) -> None:
     conn.commit()
     conn.close()
 
+def reset_user_settings_to_default(chat_id: str) -> None:
+    conn = sqlite3.connect(DB_FILE)
+    conn.execute("PRAGMA foreign_keys = ON")
+    cursor = conn.cursor()
+
+    cursor.execute("""UPDATE users SET light_day = ?, light_night = ?, wind_max = ?, humidity_max = ?, pump_flow_rate = ?, bottle_Volume_l = ?, temp_min = ? WHERE chat_id = ?""",
+                   (DEFAULTS['light_day'], DEFAULTS['light_night'], DEFAULTS['wind_max'], DEFAULTS['humidity_max'], DEFAULTS['pump_flow_rate'], DEFAULTS['bottle_Volume_l'], DEFAULTS['temp_min'], chat_id))
+
+    conn.commit()
+    conn.close()
 
 def get_tree_types() -> list:
     conn = sqlite3.connect(DB_FILE)
@@ -194,7 +216,7 @@ def add_tree_type(name: str) -> dict | None:
         print(f"ERROR: дерево {name} уже есть, уже существует!")
         return None
 
-def add_system(chat_id: str, sys_id: str, name: str = "Система") -> dict | None:
+def add_system(chat_id: str, sys_id: int, name: str = "Система") -> dict | None:
     conn = sqlite3.connect(DB_FILE)
     conn.execute("PRAGMA foreign_keys = ON")
     conn.row_factory = sqlite3.Row
@@ -247,6 +269,19 @@ def get_system(system_id: int ) -> dict | None:
         return None
     return dict(row)
 
+def rename_system(system_id: int, chat_id: str, new_name: str) -> bool:
+    conn = sqlite3.connect(DB_FILE)
+    conn.execute("PRAGMA foreign_keys = ON")
+    cursor = conn.cursor()
+
+    cursor.execute(
+        """UPDATE systems SET name = ? WHERE id = ? AND chat_id""", (new_name, chat_id))
+    updated = cursor.rowcount > 0
+    conn.commit()
+    conn.close()
+    return updated
+
+
 def delete_system(system_id: int, chat_id: str) -> bool:
     conn = sqlite3.connect(DB_FILE)
     conn.execute("PRAGMA foreign_keys = ON")
@@ -283,6 +318,7 @@ def assign_pump (system_id: int, pump_number: int, tree_type_id: int) -> dict | 
         pa.system_id, 
         pa.pump_number,
         pa.assigned_at,
+        tt.id AS tree_type_id,
         tt.name AS tree_name
         FROM pump_assignments pa
         JOIN tree_types tt ON tt.id = pa.tree_type_id
@@ -471,7 +507,7 @@ def get_pending_tasks() -> list:
     conn.close()
     return [dict(row) for row in rows]
 
-def update_task_status(task_id: str, new_status: str) -> None:
+def update_task_status(task_id: int, new_status: str) -> None:
     ALLOWED_STATUSES = {'pending', 'checking', 'running', 'done', 'skipped', 'cancelled'}
     if new_status not in ALLOWED_STATUSES:
         print(f"ERROR! Недопустимый статус!! '{new_status}'")
@@ -505,22 +541,22 @@ def get_user_tasks (chat_id: str, status: str = None) -> list:
     conn.execute("PRAGMA foreign_keys = ON")
     conn.row_factory = sqlite3.Row
     cursor = conn.cursor()
-    
+
     if status:
         cursor.execute("""
-                        SELECT
-                        st.*
-                        s.sys_id,
-                        s.name AS system_name,
-                        pa.pump_number,
-                        tt.name AS tree_name
-                        FROM scheduled_tasks st
+                       SELECT 
+                       st.*,
+                       s.sys_id,
+                       s.name AS system_name,
+                       pa.pump_number,
+                       tt.name AS tree_name
+                       FROM scheduled_tasks st
                        JOIN systems s ON s.id = st.system_id
                        JOIN pump_assignments pa ON pa.id = st.pump_assignment_id
                        JOIN tree_types tt ON tt.id = pa.tree_type_id
                        WHERE st.chat_id = ?
-                       AND st.status = ? ORDER BY st.created_at DESC """, (chat_id, status))
-        
+                       AND st.status = ?
+                       ORDER BY st.created_at DESC """, (chat_id, status,))
     else:
         cursor.execute("""
                        SELECT
@@ -530,15 +566,16 @@ def get_user_tasks (chat_id: str, status: str = None) -> list:
                        pa.pump_number,
                        tt.name AS tree_name
                        FROM scheduled_tasks st
-                        JOIN systems s ON s.id = st.system_id
-                        JOIN pump_assignments pa ON pa.id = st.pump_assignment_id
-                        JOIN tree_types tt ON tt.id = pa.tree_type_id
-                        WHERE st.chat_id = ?
-                        ORDER BY st.created_at DESC """, (chat_id,))
-    
+                       JOIN systems s ON s.id = st.system_id
+                       JOIN pump_assignments pa ON pa.id = st.pump_assignment_id
+                       JOIN tree_types tt ON tt.id = pa.tree_type_id
+                       WHERE st.chat_id = ?
+                       ORDER BY st.created_at DESC """, (chat_id,))
+
     rows = cursor.fetchall()
     conn.close()
     return [dict(row) for row in rows]
+
 
 def log_treatment(chat_id: str, system_id: int, pump_assignment_id: int, month_name: str, stage_name: str, result: str, sensor_snapshot: str = None) -> dict | None:
     ALLOWED_RESULTS = {"success", "skipped", "failed"}
@@ -576,7 +613,7 @@ def get_last_treatment_date(chat_id: str, stage_name: str) -> datetime.datetime 
     cursor = conn.cursor()
 
     cursor.execute("""
-                   SELECT MAX (completed_at) FROM treatment_log WHERE chat_id = ? and stage_name = ? and status = 'success'""", (chat_id, stage_name))
+                   SELECT MAX (completed_at) FROM treatment_log WHERE chat_id = ? and stage_name = ? and result = 'success'""", (chat_id, stage_name))
 
     row = cursor.fetchone()
     conn.close()
@@ -594,7 +631,7 @@ def get_treatment_history(chat_id: str, limit: int = 10 ) -> list:
 
     cursor.execute("""
                    SELECT 
-                   tl.*
+                   tl.*,
                    s.sys_id,
                    s.name AS system_name,
                    pa.pump_number,
@@ -605,9 +642,58 @@ def get_treatment_history(chat_id: str, limit: int = 10 ) -> list:
                    JOIN tree_types tt ON tt.id = pa.tree_type_id
                    WHERE tl.chat_id = ?
                    ORDER BY tl.completed DESC 
-                   LIMIT = ?""", (chat_id, limit))
+                   LIMIT ? """, (chat_id, limit))
 
     rows = cursor.fetchall()
     conn.close()
     return [dict(row) for row in rows]
 
+def check_sensor_ok(chat_id:str, temp_min_override: float | None = None ) -> dict:
+    user = get_or_create_user(chat_id)
+    cash = get_sensor_cash()
+    reasons = []
+
+
+    dark = False
+    if cash.get("light") is not None:
+        dark = cash['light'] <= user['light_night']
+
+    if not dark:
+        reasons.append('Ещё светло (освещённость выше дневного порога)')
+
+
+    wind_ok = False
+    if cash.get('wind') is not None:
+        wind_ok = cash['wind'] <= user['wind_max']
+
+    if not wind_ok:
+        reasons.append(f'Сильный ветер: {cash.get("wind")} > {user["wind_max"]}')
+
+
+    humidity_ok = False
+    if cash.get('humidity') is not None:
+        humidity = cash['humidity'] <= user['humidity_max']
+
+    if not humidity_ok:
+        reasons.append(f'Сильная влажность: {cash.get("humidity")} > {user["humidity_max"]}')
+
+
+    effective_temperature_min = temp_min_override if temp_min_override is not None else user['temp_min']
+
+    temp_ok = False
+
+    if cash.get('temp') is not None:
+        temp_ok = cash['temp'] >= effective_temperature_min
+
+    if not temp_ok:
+        reasons.append(f'Слишком низкая температура: {cash.get("temp")} > {effective_temperature_min }')
+
+    return {
+        "ok": dark and wind_ok and humidity_ok,
+        "dark": dark,
+        "wind_ok": wind_ok,
+        "humidity_ok": humidity_ok,
+        "temperature_ok": temp_ok,
+        "reasons": reasons,
+        "cash": cash,
+    }
