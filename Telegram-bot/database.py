@@ -79,7 +79,7 @@ def init_db():
                    """)
 
     cursor.execute("""
-                   CREATE TABLE IF NOT EXISTS sensor_cache (
+                   CREATE TABLE IF NOT EXISTS sensor_cash (
                    chat_id TEXT PRIMARY KEY REFERENCES users (chat_id),
                    wind REAL,
                    light REAL,
