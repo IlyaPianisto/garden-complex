@@ -567,6 +567,140 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         user = db.get_or_create_user(str_id)
         label, hint = CALIB_LABELS.get(field, (field, ""))
         state['pending_calib'] = {'field': field}
+        await query.edit_message_text(f"{label}\nТекущее: {user[field]}\n{hint}",
+                                      reply_markup=kb_calib_value(field))
+
+    elif data.startswith("calib:manual"):
+        field = data.split(":")[2]
+        label, hint = CALIB_LABELS.get(field, (field, ""))
+        user = db.get_or_create_user(str_id)
+        state["awaiting_input"] = "calib:manual"
+        state['pending_calib'] = {'field': field}
+        await query.edit_message_text(f"{label}\nТекущее: {user[field]}\nВведите новое значение {hint}:",)
+
+    elif data.startswith("calib:default"):
+        field = data.split(":")[2]
+        default_val = db.DEFAULTS.get(field)
+        label = CALIB_LABELS.get(field, (field,))[0]
+        if default_val is not None:
+            db.update_user_settings(str_id, field, default_val)
+            await query.edit_message_text(f"\"{label}\" сброшено до стандартного значения: {default_val}", reply_markup=kb_calibration_menu(str_id))
+
+
+    #######
+
+    elif data.startswith("debug:pumps_sys:"):
+        page = int(data.split(":")[2])
+        systems = db.get_user_systems(str_id)
+        if not systems:
+            await query.edit_message_text("У вас нет привязанных систем :(", reply_markup=kb_debug())
+            return
+        await query.edit_message_text("Выберите систему:", reply_markup=kb_choose_system_for(str_id, "pumps", page))
+
+    elif data.startswith("pumps:sys:"):
+        parts = data.split(":")
+        system_id = int(parts[2])
+        system = db.get_system(system_id)
+        await query.edit_message_text(
+            f"Выбрана система {system['sys_id']}. \"{system['name']}\'",
+            reply_markup=kb_pumps_menu(str_id, system_id)
+        )
+
+    elif data.startswith("pumps:toggle:"):
+        parts = data.split(":")
+        system_id = int(parts[2])
+        p_num = int(parts[3])
+        system = db.get_system(system_id)
+        if not system:
+            return
+        curr = state["pump_states"][p_num]
+        action = "OFF" if curr else "ON"
+        publish_command(str_id, system['sys_id'], f"NASOS:{p_num}:{action}")
+        state["pump_states"][p_num] = not curr
+        try:
+            await query.edit_message_text(reply_markup=kb_pumps_menu(str_id, system_id))
+        except Exception:
+            pass
+
+    elif data == "debug:sensors":
+        systems = db.get_user_systems(str_id)
+        if not systems:
+            await query.edit_message_text("Нет привязанных систем!", reply_markup=kb_debug())
+            return
+        for s in systems:
+            publish_command(str_id, s['sys_id'], "GET_ALL")
+            publish_command(str_id, s['sys_id'], "GET_VETER")
+            publish_command(str_id, s['sys_id'], "GET_POT")
+
+        await query.edit_message_text("Идёт запрос данных...", reply_markup=kb_debug())
+        cash = db.get_user_cash(str_id)
+        user = db.get_or_create_user(str_id)
+        age = cash.get("age_minutes", "?")
+        await query.edit_message_text(
+            "Показания датчиков\n"
+            f"Обновлено {age} минут назад\n\n"
+            f"Температура: {cash.get("temp", "--")} ℃\n"
+            f"Влажность: {cash.get("humidity", "--")}\n"
+            f"Ветер: {cash.get("wind", "--")}\n"
+            f"Свет: {cash.get("light", "--")}"
+        )
+
+    elif data.startswith("menu:tree_config"):
+        page = int(data.split(":")[2])
+        systems = db.get_user_systems(str_id)
+        if not systems:
+            await query.edit_message_text("Нет привязанных систем!", reply_markup=kb_settings_menu())
+            return
+        await query.edit_message_text("Конфигурация деревьев. Выберите систему:", reply_markup=kb_choose_system_for(str_id, "tree_config", page))
+
+    elif data.startswith("tree_config:sys:"):
+        parts = data.split(":")
+        system_id = int(parts[2])
+        system = db.get_system(system_id)
+        await query.edit_message_text(
+            f"Система \"{system['name']}\". Выберите насос:",
+            reply_markup=kb_chose_pump(system_id, "tree_config", "menu:tree_config:0")
+        )
+
+    elif data.startswith("tree_config:pump:"):
+        parts = data.split(":")
+        system_id = int(parts[2])
+        pump_num = int(parts[3])
+        curr = db.get_pump_assignment(system_id, pump_num)
+        curr_txt = f"Сейчас: {curr['tree_name']}" if curr else "Сейчас не привязан"
+        await query.edit_message_text(
+            f"Насос {pump_num} - выберите тип дерева: \n{curr_txt}",
+            reply_markup=kb_choose_tree_type(system_id, pump_num, 0))
+
+    elif data.startswith("tree_config:assign:"):
+        parts = data.split(":")
+        system_id = int(parts[2])
+        pump_num = int(parts[3])
+        tree_type_id = int(parts[4])
+        result = db.assign_pump(system_id, pump_num, tree_type_id)
+        if result:
+            await query.edit_message_text(
+                f"Насос {pump_num} привязан к \"{result['tree_name']}\"",
+                reply_markup=kb_chose_pump(system_id, "tree_config", "menu:tree_config:0")
+            )
+
+    elif data.startswith("tree_config:back_pumps:"):
+        parts = data.split(":")
+        system_id = int(parts[2])
+        system = db.get_system(system_id)
+        await query.edit_message_text(
+            f"Система \"{system['name']}\". Выберите насос",
+            reply_markup=kb_chose_pump(system_id, "tree_config", "menu:tree_config:0")
+        )
+
+    elif data.startswith("tree_config:tree_page:"):
+        parts = data.split(":")
+        system_id = int(parts[2])
+        pump_num = int(parts[3])
+        page = int(parts[4])
+        await query.edit_message_reply_markup(
+            reply_markup=kb_choose_tree_type(system_id, pump_num, page)
+        )
 
     elif data == "menu:treatment":
         await query.edit_message_text("Обработка деревьев", reply_markup=kb_treatment_menu())

@@ -1,15 +1,11 @@
-// --- Библиотеки ---
-#include <Wire.h>                 // Для I2C 
+#include <Wire.h>
 #include <SoftwareSerial.h>
-#include <Adafruit_Sensor.h>      // Требуется для библиотеки BME680
+#include <Adafruit_Sensor.h>
 #include <Adafruit_BME680.h>
 
-// --- Пины ---
 
-// 1. Связь с ESP8266 (RX, TX) 
 SoftwareSerial espSerial(12, 13); // Пин 10 = RX (к ESP D6), Пин 11 = TX (к ESP D5)
 
-// 2. 8-ми канальный релюховый модуль.
 #define Nasos_1 11
 #define Nasos_2 10
 #define Nasos_3 9
@@ -18,26 +14,19 @@ SoftwareSerial espSerial(12, 13); // Пин 10 = RX (к ESP D6), Пин 11 = TX 
 #define Nasos_6 6
 #define Nasos_7 5 
 #define Nasos_8 4 
-
-// 3. Датчик BME680
-Adafruit_BME680 bme; 
-
-// 4. Фоторезистор
 #define POT_PIN A0
-
-// 5. Датчик холла для скорости ветра 
 #define Veter_PIN 2
 
-// --- Глобальные переменные для датчика ветра ---
+Adafruit_BME680 bme;
+
 volatile unsigned long veterPulseCount = 0;
 unsigned long lastVeterCheck = 0;
 
-// ВАЖНО: Этот фактор нужно откалибровать!
-// Он переводит Гц (импульсы/сек) в м/с (или км/ч, как тебе удобнее).
-// Сейчас стоит 1.0 (1 Гц = 1 м/с) - это просто заглушка.
+// Этот фактор нужно откалибровать!
+// Он переводит Гц (импульсы/сек) в м/с
+// Сейчас стоит 1.0 (1 Гц = 1 м/с)
 const float VETER_FACTOR = 0.01884; 
 
-// Эта функция вызывается АВТОМАТИЧЕСКИ при каждом импульсе с датчика Холла
 void countVeterPulse() {
   veterPulseCount++;
 }
@@ -46,11 +35,8 @@ void setup() {
 
   Serial.begin(9600);
   Serial.println("Nano-Helper запущен.");
-
-  // Serial для связи с ESP
   espSerial.begin(9600);
-  
-  // Инициализация BME680
+
   if (!bme.begin()) {
     Serial.println("Ошибка BME680! Проверьте подключение.");
   } else {
@@ -64,8 +50,6 @@ void setup() {
   
   pinMode(POT_PIN, INPUT);
 
-  // Настраиваем пины реле и СРАЗУ ВЫКЛЮЧАЕМ ИХ
-  // Большинство релейных модулей активны по НИЗКОМУ уровню (LOW = ВКЛ, HIGH = ВЫКЛ)
   pinMode(Nasos_1, OUTPUT); digitalWrite(Nasos_1, HIGH);
   pinMode(Nasos_2, OUTPUT); digitalWrite(Nasos_2, HIGH);
   pinMode(Nasos_3, OUTPUT); digitalWrite(Nasos_3, HIGH);
@@ -75,12 +59,9 @@ void setup() {
   pinMode(Nasos_7, OUTPUT); digitalWrite(Nasos_7, HIGH); 
   pinMode(Nasos_8, OUTPUT); digitalWrite(Nasos_8, HIGH);
 
-  // Настройка датчика ветра ---
-  pinMode(Veter_PIN, INPUT_PULLUP); 
-  // Настраиваем прерывание 0 (это пин D2)
-  // Вызывать 'countVeterPulse' при каждом RISING (передний фронт сигнала)
+  pinMode(Veter_PIN, INPUT_PULLUP);
   attachInterrupt(digitalPinToInterrupt(Veter_PIN), countVeterPulse, RISING);
-  lastVeterCheck = millis(); // Запоминаем время старта
+  lastVeterCheck = millis();
 }
 
 void loop() {
@@ -94,46 +75,35 @@ void checkESPCommands() {
     Serial.print("Получена команда от ESP: ");
     Serial.println(command);
 
-    // --- Обработка команд ---
-
     if (command == "GET_ALL") {
       readAllBMEData();
     }
     else if (command == "GET_POT") {
       readResistor();
     }
-    // Команда для датчика ветра ---
     else if (command == "GET_VETER") {
       readVeter();
     }
-    // Команда для насосов ---
     // Ожидаем команду в формате "NASOS:Номер:Состояние"
     // Например: "NASOS:1:ON" или "NASOS:3:OFF"
     else if (command.startsWith("NASOS:")) {
-      // "NASOS:1:ON"
       int firstColon = command.indexOf(':');      // Индекс 1-го ':' (в позиции 5)
       int secondColon = command.indexOf(':', firstColon + 1); // Индекс 2-го ':' (в позиции 7)
 
       if (firstColon != -1 && secondColon != -1) {
-        // Вырезаем номер насоса (между 1-м и 2-м ':')
         String numStr = command.substring(firstColon + 1, secondColon);
         int pumpNum = numStr.toInt();
-        
-        // Вырезаем состояние (после 2-го ':')
         String stateStr = command.substring(secondColon + 1);
-        
-        // Вызываем функцию управления
+
         controlNasos(pumpNum, stateStr);
       }
     }
   }
 }
 
-// --- НОВАЯ ФУНКЦИЯ: Управление насосами ---
 void controlNasos(int num, String state) {
   int pinToControl = -1;
-  
-  // Выбираем пин в зависимости от номера
+
   switch (num) {
     case 1: pinToControl = Nasos_1; break;
     case 2: pinToControl = Nasos_2; break;
@@ -149,16 +119,13 @@ void controlNasos(int num, String state) {
       return;
   }
 
-  // Устанавливаем состояние (помним, что HIGH = ВЫКЛ, LOW = ВКЛ)
   if (state == "ON") {
     digitalWrite(pinToControl, LOW);
     Serial.print("Насос "); Serial.print(num); Serial.println(" ВКЛЮЧЕН");
-    // Отправляем подтверждение обратно в ESP
     espSerial.println("NASOS:" + String(num) + ":ON");
   } else if (state == "OFF") {
     digitalWrite(pinToControl, HIGH);
     Serial.print("Насос "); Serial.print(num); Serial.println(" ВЫКЛЮЧЕН");
-    // Отправляем подтверждение обратно в ESP
     espSerial.println("NASOS:" + String(num) + ":OFF");
   } else {
     Serial.println("Неверная команда состояния (нужно ON или OFF)");
@@ -166,35 +133,24 @@ void controlNasos(int num, String state) {
   }
 }
 
-
-// --- НОВАЯ ФУНКЦИЯ: Чтение датчика ветра ---
 void readVeter() {
-  unsigned long duration = millis() - lastVeterCheck; // Сколько мс прошло с прошлой проверки
-  
-  // Безопасно считываем счетчик импульсов
-  // Отключаем прерывания на мгновение, чтобы 'veterPulseCount' не изменился во время чтения
+  unsigned long duration = millis() - lastVeterCheck;
   noInterrupts();
   unsigned long pulseCount = veterPulseCount;
-  veterPulseCount = 0; // Сбрасываем счетчик для следующего измерения
-  interrupts(); // Включаем прерывания обратно
+  veterPulseCount = 0;
+  interrupts();
+  lastVeterCheck = millis();
 
-  lastVeterCheck = millis(); // Сбрасываем таймер
-
-  // 1. Считаем частоту (Гц = импульсы в секунду)
+  // Считаем частоту (Гц = импульсы в секунду)
   // (float)pulseCount / (duration / 1000.0)
   float frequency = (float)pulseCount / (duration / 500.0);
-
-  // 2. Переводим частоту в скорость ветра (м/с или км/ч)
   float windSpeed = frequency * VETER_FACTOR;
 
   Serial.print("Скорость ветра (м/с): ");
   Serial.println(windSpeed, 6);
-  // Отправляем ответ в ESP
   espSerial.println("VETER:" + String(windSpeed));
 }
 
-
-// Функция для чтения всех данных с BME680
 void readAllBMEData() {
   if (!bme.performReading()) {
     Serial.println("Ошибка чтения BME680!");
@@ -204,22 +160,18 @@ void readAllBMEData() {
   
   float tempC = bme.temperature;
   float humidity = bme.humidity;
-  float pressure = bme.pressure / 100.0F; // Давление в гПа
+  float pressure = bme.pressure / 100.0F;
   
   Serial.print("Температура: "); Serial.print(tempC); Serial.println(" *C");
   Serial.print("Влажность: "); Serial.print(humidity); Serial.println(" %");
   Serial.print("Давление: "); Serial.print(pressure); Serial.println(" hPa");
-
-  // Отправляем все данные в ESP в виде одной строки
   String response = "BME:T:" + String(tempC) + "|H:" + String(humidity) + "|P:" + String(pressure);
   espSerial.println(response);
 }
 
-// Функция чтения фоторезистора и отправки ответа в ESP
 void readResistor() {
   int potValue = analogRead(POT_PIN);
   Serial.print("Значение фоторезистора: ");
   Serial.println(potValue);
-  // Отправляем ответ в ESP
   espSerial.println("POT:" + String(potValue));
 }
