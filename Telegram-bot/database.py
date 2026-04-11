@@ -254,7 +254,7 @@ def get_user_systems(chat_id: str) -> list:
 def get_system(system_id: int ) -> dict | None:
     conn = sqlite3.connect(DB_FILE)
     conn.execute("PRAGMA foreign_keys = ON")
-    conn.rom_row_factory = sqlite3.Row
+    conn.row_factory = sqlite3.Row
     cursor = conn.cursor()
 
     cursor.execute(

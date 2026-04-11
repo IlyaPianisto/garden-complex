@@ -26,7 +26,7 @@ logging.basicConfig(format="%(asctime)s - %(name)s - %(levelname)s - %(message)s
 logger = logging.getLogger(__name__)
 
 # Глобальные переменные
-mqtt_client = None
+mqtt_client: mqtt.Client | None = None
 
 def load_treatments() -> dict:
     if not os.path.exists(TREATMENTS_FILE):
@@ -46,6 +46,21 @@ CALIB_LABELS = {
     "wind_max":  ("Максимальная скорость ветра", "м/с"),
     "humidity_max": ("Максимальная влажность", " "),
     "pump_flow_rate": ("Время опрыскивания (c)", "c"),
+}
+
+CALIB_SENSOR_CMD = {
+    "light_night": "GET_POT",
+    "wind_max": "GET_VETER",
+    "humidity_max": "GET_ALL",
+    "temp_min": "GET_ALL",
+    "pump_flow_rate": None,
+}
+
+CALIB_CASH_FIELD = {
+    "light_night": "light",
+    "wind_max": "wind",
+    "humidity_max": "humidity",
+    "temp_max": "temp",
 }
 
 # Маппинг месяцев
@@ -240,7 +255,7 @@ def kb_chose_pump (system_id:int, purpose: str, page: int) -> InlineKeyboardMark
 
 def kb_calib_value(field: str) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup([
-        [InlineKeyboardButton("Считать текущее", callback_data="calib:read_sensor")],
+        [InlineKeyboardButton("Считать текущее", callback_data=f"calib:read_sensor:{field}")],
         [InlineKeyboardButton("Ввести вручную", callback_data=f"calib:manual:{field}")],
         [InlineKeyboardButton("Вернуть к стандартному", callback_data=f"calib:default:{field}")],
         [InlineKeyboardButton("<- Назад", callback_data="menu:calibration")],
@@ -258,11 +273,23 @@ def kb_reset_calibrate_value():
         [InlineKeyboardButton("<- Назад", callback_data="")],
     ])
 
+def kb_calib_confirm(field: str) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("Записать", callback_data=f"calib:save:{field}")],
+        [InlineKeyboardButton("<- Назад", callback_data=f"calib:field:{field}")],
+    ])
+
 def kb_debug() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup([
         [InlineKeyboardButton("Вкл/Выкл насос", callback_data="debug:pumps_sys:0")],
         [InlineKeyboardButton("Показания всех датчиков", callback_data="debug:sensors")],
         [InlineKeyboardButton("<- Назад", callback_data="menu:settings")],
+    ])
+
+def kb_sensors_display() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("Обновить значения", callback_data="debug:sensors")],
+        [InlineKeyboardButton("<- Назад", callback_data="menu:debug")],
     ])
 
 def kb_pumps_menu(str_id: str, system_id: int) -> InlineKeyboardMarkup:
@@ -586,8 +613,46 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             db.update_user_settings(str_id, field, default_val)
             await query.edit_message_text(f"\"{label}\" сброшено до стандартного значения: {default_val}", reply_markup=kb_calibration_menu(str_id))
 
+    elif data.startswith("calib:read_sensor:"):
+        field = data.split(":")[2]
+        systems = db.get_user_systems(str_id)
+        if not systems:
+            await query.edit_message_text("Нет привязанных систем!", reply_markup=kb_calibration_menu(str_id))
+            return
+        cmd = CALIB_SENSOR_CMD.get(field)
+        if not cmd:
+            await query.edit_message_text("Для этого параметра датчиков нет!", reply_markup=kb_calib_value(field))
+            return
+        publish_command(str_id, systems[0]["sys_id"], cmd)
+        await query.edit_message_text("Запрашиваем значения...")
 
-    #######
+        cash = db.get_sensor_cash(str_id)
+        cash_key = CALIB_CASH_FIELD.get(field)
+        read_value = cash.get(cash_key) if cash_key else None
+
+        if read_value is None:
+            await query.edit_message_text("От датчика нет ответа! :(", reply_markup=kb_calib_value(field))
+            return
+
+        state['pending_calib'] = {'field': field, "read_value": read_value}
+        label = CALIB_LABELS.get(field, (field,))[0]
+
+        await query.edit_message_text(
+            f"{label}\nТекущее значение с датчика: {read_value}\n\nЗаписать это значение?", reply_markup=kb_calib_confirm(field)
+        )
+
+    elif data.startswith("calib:save"):
+        field = data.split(":")[2]
+        pending =  state.get("pending_calib", {})
+        value = pending.get("read_value")
+        label = CALIB_LABELS.get(field, (field,))[0]
+
+        if value is None:
+            await query.edit_message_text("ERROR! Значене не найдено!", reply_markup=kb_calib_value(field))
+            return
+        db.update_user_settings(str_id, field, value)
+        state["pending_calib"] = None
+        await query.edit_message_text(f"\"{label}\" сохранено: {value}", reply_markup=kb_calibration_menu(str_id))
 
     elif data.startswith("debug:pumps_sys:"):
         page = int(data.split(":")[2])
@@ -633,7 +698,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             publish_command(str_id, s['sys_id'], "GET_POT")
 
         await query.edit_message_text("Идёт запрос данных...", reply_markup=kb_debug())
-        cash = db.get_user_cash(str_id)
+        cash = db.get_sensor_cash(str_id)
         user = db.get_or_create_user(str_id)
         age = cash.get("age_minutes", "?")
         await query.edit_message_text(
@@ -642,7 +707,9 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"Температура: {cash.get("temp", "--")} ℃\n"
             f"Влажность: {cash.get("humidity", "--")}\n"
             f"Ветер: {cash.get("wind", "--")}\n"
-            f"Свет: {cash.get("light", "--")}"
+            f"Свет: {cash.get("light", "--")}",
+
+            reply_markup=kb_sensors_display()
         )
 
     elif data.startswith("menu:tree_config"):
@@ -701,6 +768,33 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.edit_message_reply_markup(
             reply_markup=kb_choose_tree_type(system_id, pump_num, page)
         )
+
+    elif data.startswith("treatment:sys"):
+        parts = data.split(":")
+        system_id = int(parts[2])
+        system = db.get_system(system_id)
+        if state.get("pending_treatment") is None:
+            state["pending_treatment"] = {}
+        state["pending_treatment"]["system_id"] = system_id
+        pumps = db.get_system_pumps(system_id)
+        if not pumps:
+            await query.edit_message_text(
+                f"В системе \"{system['name']}\" нет привязанных насосов",
+                reply_markup=kb_treatment_menu()
+            )
+            return
+        rows = []
+        for pump in pumps:
+            rows.append([InlineKeyboardButton(
+                f"{pump['pump_number']}. {pump['tree+_name']}",
+                callback_data=f"treat:pump:{system_id}:{pump['id']}"
+            )])
+        rows.append([InlineKeyboardButton("<- Назад", callback_data="treat:choose_system")])
+        await query.edit_message_text(
+            f"Система \"{system['name']}\". \nВыберите насос:",
+            reply_markup=InlineKeyboardMarkup(rows),
+        )
+
 
     elif data == "menu:treatment":
         await query.edit_message_text("Обработка деревьев", reply_markup=kb_treatment_menu())
