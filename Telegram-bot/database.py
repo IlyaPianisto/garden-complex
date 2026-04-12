@@ -70,7 +70,7 @@ def init_db():
     cursor.execute("""
                    CREATE TABLE IF NOT EXISTS pump_assignments (
                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                   system_id INTEGER NOT NULL REFERENCES systems (systems_id),
+                   system_id INTEGER NOT NULL REFERENCES systems (id),
                    pump_number INTEGER NOT NULL CHECK(pump_number BETWEEN 1 AND 8),
                    tree_type_id INTEGER NOT NULL REFERENCES tree_types (id),
                    assigned_at TEXT NOT NULL,
@@ -93,7 +93,7 @@ def init_db():
                    CREATE TABLE IF NOT EXISTS scheduled_tasks (
                    id INTEGER PRIMARY KEY AUTOINCREMENT,
                    chat_id TEXT NOT NULL REFERENCES users (chat_id),
-                    system_id INTEGER NOT NULL REFERENCES systems (systems_id),
+                    system_id INTEGER NOT NULL REFERENCES systems (id),
                    pump_assignment_id INTEGER NOT NULL REFERENCES pump_assignments (id), 
                    month_name TEXT NOT NULL,
                    stage_name TEXT NOT NULL,
@@ -106,7 +106,7 @@ def init_db():
                    CREATE TABLE IF NOT EXISTS treatment_log (
                    id INTEGER PRIMARY KEY AUTOINCREMENT,
                    chat_id TEXT NOT NULL REFERENCES users (chat_id),
-                    system_id INTEGER NOT NULL REFERENCES systems (systems_id),
+                    system_id INTEGER NOT NULL REFERENCES systems (id),
                    pump_assignment_id INTEGER NOT NULL REFERENCES pump_assignments (id), 
                    month_name TEXT NOT NULL,
                    stage_name TEXT NOT NULL,
@@ -170,8 +170,8 @@ def reset_user_settings_to_default(chat_id: str) -> None:
     conn.execute("PRAGMA foreign_keys = ON")
     cursor = conn.cursor()
 
-    cursor.execute("""UPDATE users SET light_day = ?, light_night = ?, wind_max = ?, humidity_max = ?, pump_flow_rate = ?, bottle_Volume_l = ?, temp_min = ? WHERE chat_id = ?""",
-                   (DEFAULTS['light_day'], DEFAULTS['light_night'], DEFAULTS['wind_max'], DEFAULTS['humidity_max'], DEFAULTS['pump_flow_rate'], DEFAULTS['bottle_Volume_l'], DEFAULTS['temp_min'], chat_id))
+    cursor.execute("""UPDATE users SET light_day = ?, light_night = ?, wind_max = ?, humidity_max = ?, pump_flow_rate = ?, bottle_volume_l = ?, temp_min = ? WHERE chat_id = ?""",
+                   (DEFAULTS['light_day'], DEFAULTS['light_night'], DEFAULTS['wind_max'], DEFAULTS['humidity_max'], DEFAULTS['pump_flow_rate'], DEFAULTS['bottle_volume_l'], DEFAULTS['temp_min'], chat_id))
 
     conn.commit()
     conn.close()
@@ -273,7 +273,7 @@ def rename_system(system_id: int, chat_id: str, new_name: str) -> bool:
     cursor = conn.cursor()
 
     cursor.execute(
-        """UPDATE systems SET name = ? WHERE id = ? AND chat_id""", (new_name, chat_id))
+        """UPDATE systems SET name = ? WHERE id = ? AND chat_id = ?""", (new_name, system_id, chat_id))
     updated = cursor.rowcount > 0
     conn.commit()
     conn.close()
@@ -320,7 +320,7 @@ def assign_pump (system_id: int, pump_number: int, tree_type_id: int) -> dict | 
         tt.name AS tree_name
         FROM pump_assignments pa
         JOIN tree_types tt ON tt.id = pa.tree_type_id
-        WHERE pa.tree_type_id = ? AND pa.pump_number = ?
+        WHERE pa.system_id = ? AND pa.pump_number = ?
         """, (system_id, pump_number))
 
         row = cursor.fetchone()
@@ -370,9 +370,9 @@ def get_pump_assignment(system_id: int, pump_number: int) -> dict | None:
                     tt.name AS tree_name
                 FROM pump_assignments pa
                 JOIN tree_types tt ON tt.id = pa.tree_type_id
-                WHERE pa.tree_type_id = ? AND pa.pump_number = ?""", (system_id, pump_number))
+                WHERE pa.system_id = ? AND pa.pump_number = ?""", (system_id, pump_number))
 
-    row = cursor.fetchall()
+    row = cursor.fetchone()
     conn.close()
     if row is None:
         return None
@@ -427,7 +427,7 @@ def get_sensor_cash(chat_id: str) -> dict:
     result = dict(row)
 
     try:
-        updated = datetime.datetime.now().isoformat(result['updated_at'])
+        updated = datetime.datetime.now().fromisoformat(result['updated_at'])
         age_seconds = (datetime.datetime.now() - updated).total_seconds()
         result['age_minutes'] = round(age_seconds / 60, 1)
     except Exception:
@@ -484,7 +484,7 @@ def get_pending_tasks() -> list:
                     tt.name AS tree_name
                     FROM scheduled_tasks st
                     JOIN systems s ON s.id = st.system_id
-                    JOIN pump_assignments pa ON pa.id = st.tree_type_id
+                    JOIN pump_assignments pa ON pa.id = st.pump_assignment_id
                     JOIN tree_types tt ON tt.id = pa.tree_type_id
                     WHERE st.status = 'pending' AND st.scheduled_time <= ? ORDER BY st.created_at ASC """, (current_time,))
 
@@ -635,7 +635,7 @@ def get_treatment_history(chat_id: str, limit: int = 10 ) -> list:
 
 def check_sensor_ok(chat_id:str, temp_min_override: float | None = None ) -> dict:
     user = get_or_create_user(chat_id)
-    cash = get_sensor_cash()
+    cash = get_sensor_cash(chat_id)
     reasons = []
 
 
@@ -657,7 +657,7 @@ def check_sensor_ok(chat_id:str, temp_min_override: float | None = None ) -> dic
 
     humidity_ok = False
     if cash.get('humidity') is not None:
-        humidity = cash['humidity'] <= user['humidity_max']
+        humidity_ok = cash['humidity'] <= user['humidity_max']
 
     if not humidity_ok:
         reasons.append(f'Сильная влажность: {cash.get("humidity")} > {user["humidity_max"]}')
@@ -674,7 +674,7 @@ def check_sensor_ok(chat_id:str, temp_min_override: float | None = None ) -> dic
         reasons.append(f'Слишком низкая температура: {cash.get("temp")} > {effective_temperature_min }')
 
     return {
-        "ok": dark and wind_ok and humidity_ok,
+        "ok": dark and wind_ok and humidity_ok and temp_ok,
         "dark": dark,
         "wind_ok": wind_ok,
         "humidity_ok": humidity_ok,

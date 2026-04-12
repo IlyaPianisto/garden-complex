@@ -143,10 +143,10 @@ def on_message(client, userdata, msg):
                     db.update_sensor_cash(owner_id, "humidity", float(part[2:]))
 
         elif payload.startswith("NASOS:"):
-            parts = payload.split(":")
-            if len(parts) >= 3:
-                p_num = int(parts[1])
-                state = (parts[2] == "ON")
+            nasos_parts = payload.split(":")
+            if len(nasos_parts) >= 3:
+                p_num = int(nasos_parts[1])
+                state = (nasos_parts[2] == "ON")
                 user_states[owner_id]["pump_states"][p_num] = state
 
     except Exception as e:
@@ -156,7 +156,7 @@ def on_message(client, userdata, msg):
 
 def kb_main_menu():
     kb = [
-        [InlineKeyboardButton("Обработка деревьев", callback_data="menu:treatments")],
+        [InlineKeyboardButton("Обработка деревьев", callback_data="menu:treatment")],
         [InlineKeyboardButton("Настройки", callback_data="menu:settings")]
     ]
     return InlineKeyboardMarkup(kb)
@@ -242,7 +242,7 @@ def kb_chose_pump (system_id:int, purpose: str, back: str) -> InlineKeyboardMark
     rows = []
     row = []
     for i in range(1, 9):
-        rows.append([InlineKeyboardButton(f"Насос {i}", callback_data=f"{purpose}:pump:{system_id}:{i}")])
+        rows.append([InlineKeyboardButton(f"Насос {i}", callback_data=f"{purpose}:pump:{system_id}:{i}")]) ##
         if len(row) == 2:
             rows.append(row)
             row = []
@@ -309,7 +309,7 @@ def kb_pumps_menu(str_id: str, system_id: int) -> InlineKeyboardMarkup:
 def kb_choose_system_for(str_id: str, purpose:str, page: int = 0) -> InlineKeyboardMarkup:
     systems = db.get_user_systems(str_id)
     start = page * SYSTEMS_PER_PAGE
-    end = page + SYSTEMS_PER_PAGE
+    end = start + SYSTEMS_PER_PAGE
     page_systems = systems[start:end]
 
     rows = []
@@ -344,7 +344,7 @@ def kb_delete_confirm (system_id: int, page: int) -> InlineKeyboardMarkup:
 def kb_choose_tree_type(system_id: int, pump_num: int,page: int) -> InlineKeyboardMarkup:
     tree_types = db.get_tree_types()
     start = page * TREES_PER_PAGE
-    end = page + TREES_PER_PAGE
+    end = start + TREES_PER_PAGE
     page_trees = tree_types[start:end]
 
     rows = []
@@ -533,15 +533,17 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         system_id = int(parts[2])
         page = int(parts[3])
         system = db.get_system(system_id)
-        await query.edit_message_text(f"Выбрана система №{system['sys_id']}  \"{system['name']}\"", reply_markup=kb_system_menu(str_id, page))
+        await query.edit_message_text(f"Выбрана система №{system['sys_id']}  \"{system['name']}\"", reply_markup=kb_chosen_system(system_id, page))
 
     elif data.startswith("sys:rename:"):
         parts = data.split(":")
         system_id = int(parts[2])
         page = int(parts[3])
-        state['awaiting_input'] = 'sys:rename'
+        state['awaiting_input'] = 'sys_rename'
         state['pending_sys'] = {'system_id': system_id, 'page': page}
-        await query.edit_message_text("Введите новое название системы:", reply_markup=kb_chosen_system(system_id, page))
+        await query.edit_message_text("Введите новое название системы:", reply_markup=InlineKeyboardMarkup([[
+            InlineKeyboardButton("<- Назад", callback_data=f"sys:select:{system_id}:{page}"),
+        ]]))
 
     elif data.startswith("sys:delete_confirm:"):
         parts = data.split(":")
@@ -584,9 +586,9 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         state['pending_sys'] = {'slot': slot, 'page': page}
         await query.edit_message_text("Напишите название для вашей системы:", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("<- Назад", callback_data="sys:add:")]]))
 
-    elif data == "calib:bootle":
+    elif data == "calib:bottle":
         user = db.get_or_create_user(str_id)
-        state['awaiting_input'] = 'calib:bootle'
+        state['awaiting_input'] = 'calib:bottle'
         await query.edit_message_text(f"Текущий объём: {user['bottle_volume_l']} л.\nВведите новый объём в литрах:", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("<- Назад", callback_data="menu:calibration")]]))
 
     elif data.startswith("calib:field"):
@@ -705,7 +707,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"Обновлено {age} минут назад\n\n"
             f"Температура: {cash.get("temp", "--")} ℃\n"
             f"Влажность: {cash.get("humidity", "--")}\n"
-            f"Ветер: {cash.get("wind", "--")}\n"
+            f"Ветер: {cash.get("wind", "--"):.6F}\n"
             f"Свет: {cash.get("light", "--")}",
 
             reply_markup=kb_sensors_display()
@@ -785,7 +787,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         rows = []
         for pump in pumps:
             rows.append([InlineKeyboardButton(
-                f"{pump['pump_number']}. {pump['tree+_name']}",
+                f"{pump['pump_number']}. {pump['tree_name']}",
                 callback_data=f"treat:pump:{system_id}:{pump['id']}"
             )])
         rows.append([InlineKeyboardButton("<- Назад", callback_data="treat:choose_system")])
@@ -842,7 +844,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         tasks = db.get_user_tasks(str_id, status=status)
         label_map = {'pending': "Отложенные", 'running': "В процессе"}
         if not tasks:
-            await query.edit_message_text(f"Обработка отменена\n{label_map[status]}\nОбработок нет", reply_markup=InlineKeyboardMarkup([InlineKeyboardButton("<- Назад", callback_data="menu:treatment")]))
+            await query.edit_message_text(f"Обработка отменена\n{label_map[status]}\nОбработок нет", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("<- Назад", callback_data="menu:treatment")]]))
             return
         await query.edit_message_text(f"Обработка отменена. \n\n{label_map[status]}\nОбработки:", reply_markup=kb_task_list(tasks, status))
 
@@ -1042,9 +1044,9 @@ async def run_schedule_task(app, task: dict):
     if str_id in user_states:
         user_states[str_id]["pump_states"][pump_num] = True
 
-        await asyncio.sleep(duration)
+    await asyncio.sleep(duration)
 
-        publish_command(chat_id, system["sys_id"], f"NASOS:{pump_num}:OFF")
+    publish_command(chat_id, system["sys_id"], f"NASOS:{pump_num}:OFF")
 
     if str_id in user_states:
         user_states[str_id]["pump_states"][pump_num] = False
