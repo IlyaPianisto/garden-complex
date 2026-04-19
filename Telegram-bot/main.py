@@ -2,6 +2,7 @@ import logging
 import asyncio
 import json
 import os
+import datetime
 from dotenv import load_dotenv
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup
 from telegram.ext import Application, CommandHandler, ContextTypes, CallbackQueryHandler, MessageHandler, filters, CallbackContext
@@ -26,7 +27,13 @@ logging.basicConfig(format="%(asctime)s - %(name)s - %(levelname)s - %(message)s
 logger = logging.getLogger(__name__)
 
 # Глобальные переменные
+processed_callbacks: set = set()
 mqtt_client: mqtt.Client | None = None
+
+async def cmd_get_file_id(update: Update, context: CallbackContext):
+    if update.message.photo:
+        file_id = update.message.photo[-1].file_id
+        await update.message.reply_text(file_id)
 
 def load_treatments() -> dict:
     if not os.path.exists(TREATMENTS_FILE):
@@ -368,8 +375,9 @@ def kb_choose_tree_type(system_id: int, pump_num: int,page: int) -> InlineKeyboa
     return InlineKeyboardMarkup(rows)
 
 def kb_treatment_menu () -> InlineKeyboardMarkup:
+    current_month_id = datetime.datetime.now().month - 1
     return InlineKeyboardMarkup([
-        [InlineKeyboardButton("Запланировать", callback_data="treat:plan:0")],
+        [InlineKeyboardButton("Запланировать", callback_data=f"treat:plan:{current_month_id}")],
         [InlineKeyboardButton("Отложенные", callback_data="treat:list:pending")],
         [InlineKeyboardButton("В процессе", callback_data="treat:list:running")],
         [InlineKeyboardButton("<- Назад", callback_data="menu:main")],
@@ -379,7 +387,7 @@ def kb_task_list(tasks: list, status: str) -> InlineKeyboardMarkup:
     rows = []
 
     for task in tasks:
-        label = f"" ### peredelat
+        label = f"{task['stage_name']} - {task['tree_name']} ({task['scheduled_time']})" ### peredelat
         rows.append([InlineKeyboardButton(label, callback_data=f"treat:task:{task['id']}:{status}")])
     rows.append([InlineKeyboardButton("<- Назад", callback_data="menu:treatment")])
     return InlineKeyboardMarkup(rows)
@@ -410,9 +418,9 @@ def kb_plan_stage(month_id : int, page: int) -> InlineKeyboardMarkup:
     nav = []
 
     if page > 0:
-        nav.append(InlineKeyboardButton("<<", callback_data=f"treat:plan:{month_id}:{page - 1}"))
+        nav.append(InlineKeyboardButton("<<", callback_data=f"treat:plan_page:{month_id}:{page - 1}"))
     if end < len(stages):
-        nav.append(InlineKeyboardButton(">>", callback_data=f"treat:plan:{month_id}:{page + 1}"))
+        nav.append(InlineKeyboardButton(">>", callback_data=f"treat:plan_page:{month_id}:{page + 1}"))
     if nav:
         rows.append(nav)
 
@@ -504,6 +512,13 @@ async def text_input_handler(update: Update, context: ContextTypes.DEFAULT_TYPE)
 async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
+
+    if query.id in processed_callbacks:
+        return
+    processed_callbacks.add(query.id)
+
+    if len(processed_callbacks) > 10:
+        processed_callbacks.clear()
 
     data = query.data
     str_id = init_user(update.effective_chat.id)
@@ -852,16 +867,27 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         month_id = int(data.split(":")[2])
         month_name = MONTHS_LIST[month_id]
         stages = treatments_db.get(month_name,{}).get('stages', [])
-        await query.edit_message_text(
+        text = (
             f"Месяц: {month_name}\n"
-            f"Доступные обработки: {len(stages)}", reply_markup=kb_plan_stage(month_id, 0)
+            f"Доступные обработки: {len(stages)}"
         )
+        kb = kb_plan_stage(month_id, 0)
+
+        try:
+            await query.edit_message_text(text, reply_markup=kb)
+        except Exception:
+            await query.edit_message_caption(text, reply_markup=kb)
 
     elif data.startswith("treat:plan_page:"):
         parts = data.split(":")
         month_id = int(data.split(":")[2])
         page = int(parts[3])
-        await query.edit_message_reply_markup(reply_markup=kb_plan_stage(month_id, page))
+        try:
+            await query.edit_message_reply_markup(reply_markup=kb_plan_stage(month_id, page))
+        except Exception:
+            month_name = MONTHS_LIST[month_id]
+            stages = treatments_db.get(month_name,{}).get('stages', [])
+            await query.edit_message_caption(f"Месяц: {month_name}\nДоступные обработки: {len(stages)}", reply_markup=kb_plan_stage(month_id, page))
 
     elif data.startswith("treat:stage:"): # его если чё менять потом.
         parts = data.split(":")
@@ -874,16 +900,13 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
 
         stage = stages[stage_id]
+        photo_url = stage.get("photo_url")
+
         text = f"{month_name}:{stage['name']}\n"
-        if stage.get("condition"):
-            text += f"{stage['condition']}"
+        if stage.get("instruction"):
+            text += f"{stage['instruction']}"
 
-        for tree_name, info in stage.get('trees', {}).items():
-            text += f"{tree_name}:{info.get('mixture', '-')}\n"
-        if stage.get("temperature") is not None:
-            text += f"{stage['temperature']}"
-
-        state['pending_treatments'] = {
+        state['pending_treatment'] = {
             "month_name": month_name,
             "month_id": month_id,
             "stage_id": stage_id,
@@ -893,7 +916,16 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             [InlineKeyboardButton("Готово!", callback_data=f"treat:confirm:{month_id}:{stage_id}")],
             [InlineKeyboardButton("<- Назад", callback_data=f"treat:plan:{month_id}")],
         ]
-        await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(rows))
+
+        if photo_url:
+            await query.message.reply_photo(
+                photo=photo_url,
+                caption=text,
+                reply_markup=InlineKeyboardMarkup(rows),
+            )
+            await query.delete_message()
+        else:
+            await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(rows))
 
     elif data.startswith("treat:confirm:"):
         parts = data.split(":")
@@ -903,17 +935,22 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         stage = treatments_db.get(month_name,{}).get('stages', [])[stage_id]
         trees_text = ','.join(stage.get("trees", {}).keys()) or "-"
 
-        await query.edit_message_text(
+        text = (
             f"Подтверждение \n\n"
             f"Месяц: {month_name}\n"
             f"Этап: {stage['name']}\n"
             f"Деревья: {trees_text}\n\n"
-            "Приготовьте раствор и залейте в ёмкости. Затем выберите системы для обработки",
-            reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("Выбрать систему", callback_data="treat:choose_system")],
-                [InlineKeyboardButton("<- Назад", callback_data=f"treat:stage:{month_id}:{stage_id}")],
-            ])
+            "Приготовьте раствор и залейте в ёмкости. Затем выберите системы для обработки"
         )
+
+        kb = InlineKeyboardMarkup([
+                [InlineKeyboardButton("Выбрать систему", callback_data="treat:choose_system")],
+                [InlineKeyboardButton("<- Назад", callback_data=f"treat:stage:{month_id}:{stage_id}")], ])
+
+        try:
+            await query.edit_message_text(text, reply_markup=kb)
+        except Exception:
+            await query.edit_message_caption(text, reply_markup=kb)
 
     elif data == "treat:choose_system":
         systems = db.get_user_systems(str_id)
@@ -1084,7 +1121,7 @@ def main():
         logger.error(f"MQTT ошибка подключения: {e}")
 
     app = Application.builder().token(TOKEN).build()
-
+    app.add_handler(MessageHandler(filters.PHOTO, cmd_get_file_id))
     app.add_handler(CommandHandler("start", cmd_start))
     app.add_handler(CallbackQueryHandler(button_handler))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, text_input_handler))
