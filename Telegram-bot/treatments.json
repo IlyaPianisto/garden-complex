@@ -6,25 +6,11 @@
         "temp_min": "5",
         "photo_url": "AgACAgIAAxkBAAIFs2nkn0ElSyg1dOfgIb2rdqCu9WPiAAJZFWsba1QoS6MpoJUldZ46AQADAgADeQADOwQ",
         "instruction": "Инструкция",
-        "trees": {
-          "Яблоня": {
-            "mixture": "Медный купорос 2% (200г/10л) + Мочевина (500г/10л).",
-            "chemicals": ["Медный купорос", "Мочевина"]
-          },
-          "Груша": {
-            "mixture": "Медный купорос 2% или Железный купорос 3%.",
-            "chemicals": ["Железный купорос"]
-          }
-        }},
-      {
-        "name": "Test 2",
-        "condition": "Перед цветением",
-        "trees": {
-          "Яблоня": {
-            "mixture": "Инсектициды от цветоеда (Актара).",
-            "chemicals": ["Актара"]
-          }
-        }
+        "trees": [
+          "Яблоня",
+          "Груша",
+          "Абрикос"
+        ]
       }
     ]
   }

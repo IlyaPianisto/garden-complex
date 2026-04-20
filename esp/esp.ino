@@ -8,14 +8,14 @@
 const char* ap_name = "ESP_SETUP_SECRET";
 const char* ap_pass = "admin12345";
 
-const char* mqtt_broker = "broker.hivemq.com";
+const char* mqtt_broker = "35.172.255.228";
 const int mqtt_port = 1883;
 
-char telegram_id[20] = "00000000"; 
-char system_id[5] = "1";
+char telegram_id[64] = "00000000"; 
+char system_id[16] = "1";
 
-char mqtt_topic_control[100];
-char mqtt_topic_sensors[100];
+char mqtt_topic_control[128];
+char mqtt_topic_sensors[128];
 
 bool shouldSaveConfig = false;
 
@@ -29,8 +29,8 @@ void saveConfigCallback () {
 }
 
 void buildTopics() {
-  sprintf(mqtt_topic_control, "app/%s/%s/control", telegram_id, system_id);
-  sprintf(mqtt_topic_sensors, "app/%s/%s/sensors", telegram_id, system_id);
+  sprintf(mqtt_topic_control, "Acpp-garden-Complexx/%s/%s/control", telegram_id, system_id);
+  sprintf(mqtt_topic_sensors, "Acpp-garden-Complexx/%s/%s/sensors", telegram_id, system_id);
   Serial.print("CONTROL Topic: "); Serial.println(mqtt_topic_control);
   Serial.print("SENSORS Topic: "); Serial.println(mqtt_topic_sensors);
 }
@@ -100,8 +100,8 @@ void setup() {
 
   wifiManager.setSaveConfigCallback(saveConfigCallback);
 
-  WiFiManagerParameter custom_tg_id("tgid", "Telegram User ID", telegram_id, 20);
-  WiFiManagerParameter custom_sys_id("sysid", "System Number", system_id, 4);
+  WiFiManagerParameter custom_tg_id("tgid", "Telegram User ID", telegram_id, 64);
+  WiFiManagerParameter custom_sys_id("sysid", "System Number", system_id, 16);
 
   wifiManager.addParameter(&custom_tg_id);
   wifiManager.addParameter(&custom_sys_id);
@@ -136,6 +136,8 @@ void setup() {
   buildTopics();
   client.setServer(mqtt_broker, mqtt_port);
   client.setCallback(callback);
+  client.setBufferSize(512);
+  client.setKeepAlive(60);
 }
 
 void reconnect() {
@@ -156,15 +158,28 @@ void reconnect() {
 }
 
 void checkUno() {
-  if (unoSerial.available() > 0) {
-    String reply = unoSerial.readStringUntil('\n');
-    reply.trim();
-    if (reply.length() > 0) {
-      Serial.print("Arduino says: "); Serial.println(reply);
-      client.publish(mqtt_topic_sensors, reply.c_str());
+  static String inputBuffer = "";
+
+  while (unoSerial.available() > 0) {
+    char c = unoSerial.read();
+    if (c == '\n'){
+      inputBuffer.trim();
+      if (inputBuffer.length() > 0) {
+        Serial.print("Arduino says: "); 
+        Serial.println(inputBuffer);
+
+        if (client.connected()){
+          client.publish(mqtt_topic_sensors, inputBuffer.c_str());
+        }
+      }
+      inputBuffer = "";
+    }
+    else {
+      inputBuffer += c;
     }
   }
 }
+
 
 void loop() {
   if (!client.connected()) {
