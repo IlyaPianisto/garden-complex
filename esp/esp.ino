@@ -64,6 +64,7 @@ void callback(char* topic, byte* payload, unsigned int length) {
 }
 
 void setup() {
+
   Serial.begin(115200);
   unoSerial.begin(9600);
   Serial.println("\n Starting...");
@@ -94,9 +95,13 @@ void setup() {
   }
 
   WiFiManager wifiManager;
-  
-  //wifiManager.resetSettings();
-  // ДЛЯ СБРОСА РАСКОМЕНТИТЬ СТРОКУ ВЫШЕ, ПОКА ЧТО НЕТУ КНОПКИ
+
+  pinMode(D8, INPUT_PULLUP);
+
+  if (digitalRead(D7) == LOW) {
+    wifiManager.resetSettings();
+    Serial.println("СБРОС настроек WIFI!!!");
+  }
 
   wifiManager.setSaveConfigCallback(saveConfigCallback);
 
@@ -159,6 +164,7 @@ void reconnect() {
 
 void checkUno() {
   static String inputBuffer = "";
+  const size_t MAX_BUFFER_SIZE = 256;
 
   while (unoSerial.available() > 0) {
     char c = unoSerial.read();
@@ -176,6 +182,11 @@ void checkUno() {
     }
     else {
       inputBuffer += c;
+
+      if (inputBuffer.length() > MAX_BUFFER_SIZE) {
+        Serial.println("Error: Buffer overflow, clearing...");
+        inputBuffer = ""; 
+      }
     }
   }
 }

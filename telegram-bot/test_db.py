@@ -2,6 +2,8 @@ import database
 import sqlite3
 import os
 
+# ДАННЫЙ КОД СЛУЖИТ ЧИСТО ДЛЯ ПРОВЕРКИ И СОЗДАНИЯ БД
+
 database.init_db()
 print("База создана")
 

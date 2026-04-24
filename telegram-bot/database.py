@@ -141,15 +141,10 @@ def get_or_create_user(chat_id: str) -> dict:
     return dict(row)
 
 #обновление значений всех
-def update_user_settings(chat_id: str, field: str, value:str) -> None:
+def update_user_settings(chat_id: str, field: str, value) -> None:
     ALLOWED_FIELDS = {
-        'light_day',
-        'light_night',
-        'temp_min',
-        'wind_max',
-        'humidity_max',
-        'bottle_volume_l',
-        'pump_flow_rate',
+        'light_day', 'light_night', 'temp_min',
+        'wind_max', 'humidity_max', 'bottle_volume_l', 'pump_flow_rate',
     }
     if field not in ALLOWED_FIELDS:
         print(f"ERROR: НЕДОПУСТИМОЕ ПОЛЕ: {field}")
@@ -158,10 +153,7 @@ def update_user_settings(chat_id: str, field: str, value:str) -> None:
     conn = sqlite3.connect(DB_FILE)
     conn.execute("PRAGMA foreign_keys = ON")
     cursor = conn.cursor()
-
-    cursor.execute(f"""
-                    UPDATE users SET {field} = ? WHERE chat_id = ?""", (value, chat_id))
-
+    cursor.execute(f"UPDATE users SET {field} = ? WHERE chat_id = ?", (float(value), chat_id))
     conn.commit()
     conn.close()
 
@@ -655,45 +647,41 @@ def get_treatment_history(chat_id: str, limit: int = 10 ) -> list:
     conn.close()
     return [dict(row) for row in rows]
 
-def check_sensor_ok(chat_id:str, temp_min_override: float | None = None ) -> dict:
+def check_sensor_ok(chat_id: str, temp_min_override: float | None = None) -> dict:
     user = get_or_create_user(chat_id)
     cash = get_sensor_cash(chat_id)
     reasons = []
 
+    light_night = float(user['light_night'])
+    wind_max = float(user['wind_max'])
+    humidity_max = float(user['humidity_max'])
+    temp_min = float(user['temp_min'])
 
     dark = False
     if cash.get("light") is not None:
-        dark = cash['light'] <= user['light_night']
-
+        dark = float(cash['light']) <= light_night
     if not dark:
-        reasons.append('Ещё светло (освещённость выше дневного порога)')
-
+        reasons.append('Ещё светло (освещённость выше ночного порога)')
 
     wind_ok = False
-    if cash.get('wind') is not None:
-        wind_ok = cash['wind'] <= user['wind_max']
-
+    if cash.get('wind') is not None :
+        wind_ok = float(cash['wind']) <= wind_max
     if not wind_ok:
-        reasons.append(f'Сильный ветер: {cash.get("wind")} > {user["wind_max"]}')
-
+        reasons.append(f'Сильный ветер: {cash.get("wind")} > {wind_max}')
 
     humidity_ok = False
     if cash.get('humidity') is not None:
-        humidity_ok = cash['humidity'] <= user['humidity_max']
-
+        humidity_ok = float(cash['humidity']) <= humidity_max
     if not humidity_ok:
-        reasons.append(f'Сильная влажность: {cash.get("humidity")} > {user["humidity_max"]}')
+        reasons.append(f'Высокая влажность: {cash.get("humidity")} > {humidity_max}')
 
-
-    effective_temperature_min = temp_min_override if temp_min_override is not None else user['temp_min']
-
+    effective_temp_min = float(temp_min_override) if temp_min_override is not None else temp_min
     temp_ok = False
-
     if cash.get('temp') is not None:
-        temp_ok = cash['temp'] >= effective_temperature_min
-
+        temp_ok = float(cash['temp']) >= effective_temp_min
     if not temp_ok:
-        reasons.append(f'Слишком низкая температура: {cash.get("temp")} > {effective_temperature_min }')
+        reasons.append(f'Низкая температура: {cash.get("temp")} < {effective_temp_min}')
+
 
     return {
         "ok": dark and wind_ok and humidity_ok and temp_ok,

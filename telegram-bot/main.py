@@ -15,6 +15,7 @@ TOKEN = os.getenv("TOKEN")
 MQTT_BROKER = os.getenv("MQTT_BROKER")
 MQTT_PORT = int(os.getenv("MQTT_PORT"))
 MQTT_TOPIC_SUBSCRIBE = os.getenv("MQTT_TOPIC_SUBSCRIBE")
+ADMIN_ID = int(os.getenv("ADMIN_ID"))
 
 TREATMENTS_FILE = "treatments.json"
 
@@ -126,10 +127,10 @@ def cale_pump_duration_sec(chat_id: str) -> int:
     user = db.get_or_create_user(chat_id)
     volume = user.get('bottle_volume_l', db.DEFAULTS['bottle_volume_l'])
     flow_rate = user.get('pump_flow_rate', db.DEFAULTS['pump_flow_rate'])
-    return max(1, round(volume / flow_rate))
+    return max(1, round(volume * flow_rate))
 
 def publish_command(chat_id, sys_id, command):
-    topic = f"app/{chat_id}/{sys_id}/control"
+    topic = f"Acpp-garden-Complexx/{chat_id}/{sys_id}/control"
     if mqtt_client:
         mqtt_client.publish(topic, command)
         logger.info(f"MQTT OUT {topic}: {command}")
@@ -863,16 +864,16 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 pump["id"],
                 month_name,
                 stage_name,
-                "22:00"
+                "13:10"
             )
 
         state["pending_treatment"] = None
         label_map = {"pending": "Отложенные", "running": "В процессе"}
         trees_used = ", ".join(set(p["tree_name"] for p in target_pumps))
         text = (
-            "Обработка запланирована на 22:00\n\n"
+            "Обработка запланирована на 13:10\n\n"
             f"Система: {system['name']}\n"
-            f"Этап: {stage_name}\n"
+            f"Обработка: {stage_name}\n"
             f"Деревья: {trees_used}\n"
             f"Насосы: {len(target_pumps)}\n"
         )
@@ -905,7 +906,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
         await query.edit_message_text(
             f"{task['tree_name']}\n"
-            f"Этап: {task['stage_name']}\n"
+            f"Обработка: {task['stage_name']}\n"
             f"Система: {task['system_name']}\n"
             f"Насос: {task['pump_number']}\n"
             f"Время: {task['scheduled_time']}\n"
@@ -1006,7 +1007,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         text = (
             f"Подтверждение \n\n"
             f"Месяц: {month_name}\n"
-            f"Этап: {stage['name']}\n"
+            f"Обработка: {stage['name']}\n"
             f"Деревья: {trees_text}\n\n"
             "Приготовьте раствор и залейте в ёмкости. Затем выберите системы для обработки"
         )
@@ -1072,7 +1073,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     #         pump_assignment_id,
     #         month_name,
     #         stage_name,
-    #         "22:00"
+    #         "13:10"
     #     )
     #
     #     state['pending_treatment'] = None
@@ -1080,9 +1081,28 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     #     pump_num = pump['pump_number'] if pump else '-'
     #
     #     await query.edit_message_text(
-    #         f"Обработка запланирована на 22:00\nНасос {pump_num} - {tree_name}\nЭтап: {stage_name}", reply_markup=kb_treatment_menu()
+    #         f"Обработка запланирована на 13:10\nНасос {pump_num} - {tree_name}\nОбработка: {stage_name}", reply_markup=kb_treatment_menu()
     #     )
 
+async def admin_commands(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    parts = update.message.text.split()
+    command = parts[0].replace("/", "").lower()
+
+    if command == "add_tree_type":
+        if len(parts) < 2:
+            await update.message.reply_text("Используй: /add_tree_type <Название дерева>")
+            return
+
+        tree_name = parts[1]
+        tree_types = db.get_tree_types()
+
+        if any(tree['name'] == tree_name for tree in tree_types):
+            await update.message.reply_text("Такое дерево уже есть в бд")
+            return
+
+        else:
+            db.add_tree_type(tree_name)
+            await update.message.reply_text(f"Дерево \"{tree_name}\" добавлено в базу!")
 
 
 async def task_scheduler(app):
@@ -1101,6 +1121,8 @@ async def run_schedule_task(app, task: dict):
     system_id = task['system_id']
     task_id = task['id']
     str_id = init_user(chat_id)
+    systems = db.get_user_systems(str_id)
+    s = systems[0]
 
     db.update_task_status(task_id, "checking")
 
@@ -1115,6 +1137,11 @@ async def run_schedule_task(app, task: dict):
     temp_min = stage.get('temp_min') if stage else None
 
     sensor_check = db.check_sensor_ok(chat_id, temp_min)
+
+    publish_command(str_id, s['sys_id'], "GET_ALL")
+    publish_command(str_id, s['sys_id'], "GET_VETER")
+    publish_command(str_id, s['sys_id'], "GET_POT")
+
     if not sensor_check['ok']:
         reasons = ", ".join(sensor_check['reasons'])
         db.update_task_status(task_id, "skipped")
@@ -1142,7 +1169,7 @@ async def run_schedule_task(app, task: dict):
     db.update_task_status(task_id, "running")
     await app.bot.send_message(
         chat_id,
-        f"Плановая обработка началась! \nЭтап: {stage_name}\nНасос: {pump_num}\nВремя: {duration} сек"
+        f"Плановая обработка началась! \nОбработка: {stage_name}\nНасос: {pump_num}\nВремя: {duration} сек"
     )
 
     publish_command(chat_id, system["sys_id"], f"NASOS:{pump_num}:ON")
@@ -1169,7 +1196,7 @@ async def run_schedule_task(app, task: dict):
 
     await app.bot.send_message(
         chat_id,
-        text = f"Обработка завершена!\nЭтап: {stage_name}"
+        text = f"Обработка завершена!\nОбработка: {stage_name}"
     )
 
 def main():
@@ -1193,6 +1220,7 @@ def main():
     app.add_handler(CommandHandler("start", cmd_start))
     app.add_handler(CallbackQueryHandler(button_handler))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, text_input_handler))
+    app.add_handler(MessageHandler(filters.COMMAND & filters.User(user_id=ADMIN_ID), admin_commands))
 
     async def post_init(application):
         asyncio.create_task(task_scheduler(application))
